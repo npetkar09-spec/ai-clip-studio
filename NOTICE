@@ -1,0 +1,8 @@
+AI Clip Studio
+Copyright 2026 The AI Clip Studio contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party components will be listed here as they are added, with their licences.
+Planned (licences to be verified before use): React Native, Expo, whisper.rn / whisper.cpp
+and a Whisper English model, Android Media3 (if used).

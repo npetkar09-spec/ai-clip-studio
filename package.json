@@ -1,0 +1,14 @@
+{
+  "name": "ai-clip-studio",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Open-source, on-device AI clip suggestions for Android (prototype).",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test tests/highlights.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
