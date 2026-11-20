@@ -5,8 +5,13 @@ import {
 } from 'react-native';
 import { requireNativeModule } from 'expo';
 import * as ImagePicker from 'expo-image-picker';
+import { File, Paths } from 'expo-file-system';
+import { initWhisper } from 'whisper.rn';
 import { suggestHighlights } from './src/highlights';
 import { makeSampleTranscript } from './src/sample/sampleTranscript';
+
+const MODEL_URL =
+  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin';
 
 const AudioExtract: any = (() => {
   try { return requireNativeModule('AudioExtract'); } catch (e) { return null; }
@@ -22,45 +27,73 @@ type AudioInfo = {
   path: string; durationMs: number; bytes: number;
   inputSampleRate: number; inputChannels: number; outputSampleRate: number;
 };
+type Tr = { text: string; loadSecs: number; runSecs: number; speed: number };
 
 export default function App() {
   const clips = useMemo(() => suggestHighlights(makeSampleTranscript()), []);
   const [video, setVideo] = useState<Picked | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [audio, setAudio] = useState<AudioInfo | null>(null);
-  const [busy, setBusy] = useState(false);
   const [secs, setSecs] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState('');
+  const [tr, setTr] = useState<Tr | null>(null);
 
   async function pickVideo() {
-    setError(null);
-    setAudio(null);
+    setError(null); setAudio(null); setTr(null);
     try {
       const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'] });
       if (!r.canceled && r.assets && r.assets.length > 0) {
         const a = r.assets[0];
         setVideo({ name: a.fileName ?? 'video', durationMs: a.duration ?? null, uri: a.uri });
       }
-    } catch (e) {
-      setError(String(e));
-    }
+    } catch (e) { setError(String(e)); }
   }
 
   async function extractAudio() {
     if (!video) return;
-    setError(null);
-    setAudio(null);
-    setBusy(true);
+    setError(null); setAudio(null); setTr(null); setBusy(true);
+    setStatus('Extracting audio...');
     const t0 = Date.now();
     try {
       if (!AudioExtract) throw new Error('Audio module is not in this build');
       const r = await AudioExtract.extractAudio(video.uri);
       setAudio(r as AudioInfo);
       setSecs((Date.now() - t0) / 1000);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); setStatus(''); }
+  }
+
+  async function transcribe() {
+    if (!audio) return;
+    setError(null); setTr(null); setBusy(true);
+    try {
+      const modelFile = new File(Paths.document, 'ggml-tiny.en.bin');
+      if (modelFile.exists && (modelFile.size ?? 0) < 70000000) {
+        modelFile.delete();
+      }
+      if (!modelFile.exists) {
+        setStatus('Downloading model (about 78 MB, one time)...');
+        await File.downloadFileAsync(MODEL_URL, modelFile);
+      }
+      setStatus('Loading model...');
+      const t0 = Date.now();
+      const ctx = await initWhisper({ filePath: modelFile.uri });
+      const loadSecs = (Date.now() - t0) / 1000;
+      setStatus('Transcribing...');
+      const t1 = Date.now();
+      const { promise } = ctx.transcribe(audio.path, { language: 'en' });
+      const res = await promise;
+      const runSecs = (Date.now() - t1) / 1000;
+      await ctx.release();
+      setTr({
+        text: res.result,
+        loadSecs,
+        runSecs,
+        speed: audio.durationMs / 1000 / runSecs,
+      });
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); setStatus(''); }
   }
 
   const topPad = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 28) : 44;
@@ -70,12 +103,12 @@ export default function App() {
       <StatusBar barStyle="dark-content" />
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.title}>AI Clip Studio</Text>
-        <Text style={styles.sub}>Prototype v3 (audio test)</Text>
+        <Text style={styles.sub}>Prototype v4 (transcribe test)</Text>
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
-            Pick a video, then tap Extract audio to test step 1. Transcription
-            and export are not built yet, so the clips further down still come
-            from a built-in SAMPLE transcript, not from your video.
+            Test steps: pick a video, extract audio, then transcribe. The first
+            transcribe downloads a 78 MB model. The clips further down still
+            come from a built-in SAMPLE transcript, not from your video.
           </Text>
         </View>
         <Pressable style={styles.button} onPress={pickVideo}>
@@ -95,14 +128,29 @@ export default function App() {
             <Text style={styles.buttonText}>Extract audio (16 kHz mono)</Text>
           </Pressable>
         )}
-        {busy && <ActivityIndicator />}
         {audio && (
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Audio extracted</Text>
             <Text style={styles.meta}>Audio length: {fmt(audio.durationMs)} ({audio.durationMs} ms)</Text>
             <Text style={styles.meta}>Output: {audio.outputSampleRate} Hz mono, {(audio.bytes / 1048576).toFixed(1)} MB</Text>
-            <Text style={styles.meta}>Original: {audio.inputSampleRate} Hz, {audio.inputChannels} channel(s)</Text>
             {secs !== null && <Text style={styles.meta}>Took {secs.toFixed(1)} s</Text>}
+          </View>
+        )}
+        {audio && (
+          <Pressable style={[styles.button, busy && styles.disabled]} onPress={transcribe} disabled={busy}>
+            <Text style={styles.buttonText}>Transcribe (tiny.en)</Text>
+          </Pressable>
+        )}
+        {busy && <ActivityIndicator />}
+        {busy && status !== '' && <Text style={styles.meta}>{status}</Text>}
+        {tr && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Transcript</Text>
+            <Text style={styles.meta}>
+              Model load {tr.loadSecs.toFixed(1)} s | transcribe {tr.runSecs.toFixed(1)} s | {tr.speed.toFixed(1)}x real time
+            </Text>
+            <Text style={styles.meta}>Characters: {tr.text.length}</Text>
+            <Text style={styles.reason}>{tr.text.slice(0, 700)}</Text>
           </View>
         )}
         {error && <Text style={styles.error}>Error: {error}</Text>}
