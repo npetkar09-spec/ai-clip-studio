@@ -19,6 +19,8 @@ j.expo.android=Object.assign({},j.expo.android,{package:"org.aiclipstudio.protot
 fs.writeFileSync(p,JSON.stringify(j,null,2));'
 npm install
 npx expo install expo-image-picker
+npx expo install expo-file-system
+npm install whisper.rn
 bash "$GITHUB_WORKSPACE/scripts/add-audio-module.sh"
 npx expo prebuild --platform android --no-install
 cd android
