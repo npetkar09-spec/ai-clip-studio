@@ -18,6 +18,7 @@ j.expo.name="AI Clip Studio";j.expo.slug="ai-clip-studio";
 j.expo.android=Object.assign({},j.expo.android,{package:"org.aiclipstudio.prototype"});
 fs.writeFileSync(p,JSON.stringify(j,null,2));'
 npm install
+npx expo install expo-image-picker
 npx expo prebuild --platform android --no-install
 cd android
 # arm64 only: faster build, and matches modern phones.
