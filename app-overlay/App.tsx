@@ -27,10 +27,14 @@ type AudioInfo = {
   path: string; durationMs: number; bytes: number;
   inputSampleRate: number; inputChannels: number; outputSampleRate: number;
 };
-type Tr = { text: string; loadSecs: number; runSecs: number; speed: number };
+type Clip = ReturnType<typeof suggestHighlights>[number];
+type Tr = {
+  text: string; loadSecs: number; runSecs: number; speed: number;
+  segCount: number; unit: string; lastEndMs: number; clips: Clip[];
+};
 
 export default function App() {
-  const clips = useMemo(() => suggestHighlights(makeSampleTranscript()), []);
+  const sampleClips = useMemo(() => suggestHighlights(makeSampleTranscript()), []);
   const [video, setVideo] = useState<Picked | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [audio, setAudio] = useState<AudioInfo | null>(null);
@@ -86,11 +90,33 @@ export default function App() {
       const res = await promise;
       const runSecs = (Date.now() - t1) / 1000;
       await ctx.release();
+
+      // Work out the time unit of the segment times from the audio length.
+      const segs = res.segments ?? [];
+      const audioSec = audio.durationMs / 1000;
+      const lastT1 = segs.reduce((m: number, s: any) => Math.max(m, s.t1), 0);
+      let mult = 1000;
+      let unit = 'seconds';
+      if (lastT1 > audioSec * 500) { mult = 1; unit = 'milliseconds'; }
+      else if (lastT1 > audioSec * 50) { mult = 10; unit = 'hundredths of a second'; }
+
+      setStatus('Finding highlights...');
+      const transcript = segs.map((s: any) => ({
+        startMs: Math.round(s.t0 * mult),
+        endMs: Math.round(s.t1 * mult),
+        text: String(s.text).trim(),
+      }));
+      const clips = suggestHighlights(transcript);
+
       setTr({
         text: res.result,
         loadSecs,
         runSecs,
         speed: audio.durationMs / 1000 / runSecs,
+        segCount: segs.length,
+        unit,
+        lastEndMs: Math.round(lastT1 * mult),
+        clips,
       });
     } catch (e) { setError(String(e)); }
     finally { setBusy(false); setStatus(''); }
@@ -103,12 +129,13 @@ export default function App() {
       <StatusBar barStyle="dark-content" />
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.title}>AI Clip Studio</Text>
-        <Text style={styles.sub}>Prototype v4 (transcribe test)</Text>
+        <Text style={styles.sub}>Prototype v5 (real clips)</Text>
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
-            Test steps: pick a video, extract audio, then transcribe. The first
-            transcribe downloads a 78 MB model. The clips further down still
-            come from a built-in SAMPLE transcript, not from your video.
+            Pick a video, extract audio, then transcribe. The app then runs the
+            highlight engine on your video's transcript. Scores are experimental
+            heuristics, not predictions of how a clip will perform. Export is not
+            built yet.
           </Text>
         </View>
         <Pressable style={styles.button} onPress={pickVideo}>
@@ -132,13 +159,12 @@ export default function App() {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Audio extracted</Text>
             <Text style={styles.meta}>Audio length: {fmt(audio.durationMs)} ({audio.durationMs} ms)</Text>
-            <Text style={styles.meta}>Output: {audio.outputSampleRate} Hz mono, {(audio.bytes / 1048576).toFixed(1)} MB</Text>
             {secs !== null && <Text style={styles.meta}>Took {secs.toFixed(1)} s</Text>}
           </View>
         )}
         {audio && (
           <Pressable style={[styles.button, busy && styles.disabled]} onPress={transcribe} disabled={busy}>
-            <Text style={styles.buttonText}>Transcribe (tiny.en)</Text>
+            <Text style={styles.buttonText}>Transcribe and find clips</Text>
           </Pressable>
         )}
         {busy && <ActivityIndicator />}
@@ -147,22 +173,42 @@ export default function App() {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Transcript</Text>
             <Text style={styles.meta}>
-              Model load {tr.loadSecs.toFixed(1)} s | transcribe {tr.runSecs.toFixed(1)} s | {tr.speed.toFixed(1)}x real time
+              Load {tr.loadSecs.toFixed(1)} s | transcribe {tr.runSecs.toFixed(1)} s | {tr.speed.toFixed(1)}x real time
             </Text>
-            <Text style={styles.meta}>Characters: {tr.text.length}</Text>
-            <Text style={styles.reason}>{tr.text.slice(0, 700)}</Text>
+            <Text style={styles.meta}>
+              {tr.segCount} segments | time unit detected: {tr.unit} | last segment ends at {fmt(tr.lastEndMs)}
+            </Text>
+            <Text style={styles.reason}>{tr.text.slice(0, 300)}...</Text>
           </View>
         )}
         {error && <Text style={styles.error}>Error: {error}</Text>}
-        <Text style={styles.cardTitle}>Sample highlights</Text>
-        {clips.map((c, i) => (
-          <View key={`${c.startMs}-${c.endMs}`} style={styles.card}>
-            <Text style={styles.cardTitle}>{`${i + 1}. ${c.title}`}</Text>
-            <Text style={styles.meta}>{`${fmt(c.startMs)} to ${fmt(c.endMs)}  |  experimental score ${c.score}`}</Text>
-            <Text style={styles.reason}>{c.reason}</Text>
-          </View>
-        ))}
-        {clips.length === 0 && <Text>No highlights found in the sample.</Text>}
+
+        {tr ? (
+          <>
+            <Text style={styles.cardTitle}>Suggested clips from your video</Text>
+            {tr.clips.map((c, i) => (
+              <View key={`${c.startMs}-${c.endMs}`} style={styles.card}>
+                <Text style={styles.cardTitle}>{`${i + 1}. ${c.title}`}</Text>
+                <Text style={styles.meta}>{`${fmt(c.startMs)} to ${fmt(c.endMs)}  |  experimental score ${c.score}`}</Text>
+                <Text style={styles.reason}>{c.reason}</Text>
+              </View>
+            ))}
+            {tr.clips.length === 0 && (
+              <Text style={styles.meta}>The engine found no clips of 15 to 60 seconds in this transcript.</Text>
+            )}
+          </>
+        ) : (
+          <>
+            <Text style={styles.cardTitle}>Sample highlights (built-in SAMPLE, not your video)</Text>
+            {sampleClips.map((c, i) => (
+              <View key={`${c.startMs}-${c.endMs}`} style={styles.card}>
+                <Text style={styles.cardTitle}>{`${i + 1}. ${c.title}`}</Text>
+                <Text style={styles.meta}>{`${fmt(c.startMs)} to ${fmt(c.endMs)}  |  experimental score ${c.score}`}</Text>
+                <Text style={styles.reason}>{c.reason}</Text>
+              </View>
+            ))}
+          </>
+        )}
       </ScrollView>
     </View>
   );
