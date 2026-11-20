@@ -21,6 +21,7 @@ npm install
 npx expo install expo-image-picker
 npx expo install expo-file-system
 npm install whisper.rn
+npm install buffer
 bash "$GITHUB_WORKSPACE/scripts/add-audio-module.sh"
 npx expo prebuild --platform android --no-install
 cd android
