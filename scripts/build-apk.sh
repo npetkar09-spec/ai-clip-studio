@@ -23,8 +23,10 @@ npx expo install expo-file-system
 npm install whisper.rn
 npm install buffer
 bash "$GITHUB_WORKSPACE/scripts/add-audio-module.sh"
+bash "$GITHUB_WORKSPACE/scripts/add-export-module.sh"
 npx expo prebuild --platform android --no-install
 cd android
 # arm64 only: faster build, and matches modern phones.
 ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon
 echo "APK: $ROOT/build-app/android/app/build/outputs/apk/release/app-release.apk"
+
