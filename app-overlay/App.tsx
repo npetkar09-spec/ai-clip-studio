@@ -8,6 +8,11 @@ import * as ImagePicker from 'expo-image-picker';
 import { File, Paths } from 'expo-file-system';
 import { initWhisper } from 'whisper.rn';
 import { suggestHighlights } from './src/highlights';
+import {
+  looksLikeWordLevel, makeCaptionChunks, stepEnd, stepStart,
+  tokensToWords, wordsInRange, wordsToSentences,
+} from './src/highlights/words';
+import type { Word } from './src/highlights/words';
 import { makeSampleTranscript } from './src/sample/sampleTranscript';
 
 const MODEL_URL =
@@ -26,6 +31,16 @@ function fmt(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+function fmtT(ms: number): string {
+  const t = Math.max(0, ms) / 1000;
+  const m = Math.floor(t / 60);
+  const sec = t - m * 60;
+  return `${m}:${sec < 10 ? '0' : ''}${sec.toFixed(1)}`;
+}
+
+const MIN_CLIP_MS = 3000;
+const MAX_CLIP_MS = 180000;
+
 type Picked = { name: string; durationMs: number | null; uri: string };
 type AudioInfo = {
   path: string; durationMs: number; bytes: number;
@@ -35,6 +50,7 @@ type Clip = ReturnType<typeof suggestHighlights>[number];
 type Tr = {
   text: string; loadSecs: number; runSecs: number; speed: number;
   segCount: number; unit: string; lastEndMs: number; clips: Clip[];
+  words: Word[]; wordMode: boolean;
 };
 
 export default function App() {
@@ -48,9 +64,10 @@ export default function App() {
   const [tr, setTr] = useState<Tr | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
   const [exported, setExported] = useState<Record<string, string>>({});
+  const [edits, setEdits] = useState<Record<string, { startMs: number; endMs: number }>>({});
 
   async function pickVideo() {
-    setError(null); setAudio(null); setTr(null);
+    setError(null); setAudio(null); setTr(null); setEdits({}); setExported({});
     try {
       const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'] });
       if (!r.canceled && r.assets && r.assets.length > 0) {
@@ -62,7 +79,7 @@ export default function App() {
 
   async function extractAudio() {
     if (!video) return;
-    setError(null); setAudio(null); setTr(null); setBusy(true);
+    setError(null); setAudio(null); setTr(null); setEdits({}); setExported({}); setBusy(true);
     setStatus('Extracting audio...');
     const t0 = Date.now();
     try {
@@ -76,7 +93,7 @@ export default function App() {
 
   async function transcribe() {
     if (!audio) return;
-    setError(null); setTr(null); setBusy(true);
+    setError(null); setTr(null); setEdits({}); setExported({}); setBusy(true);
     try {
       const modelFile = new File(Paths.document, 'ggml-tiny.en.bin');
       if (modelFile.exists && (modelFile.size ?? 0) < 70000000) {
@@ -92,7 +109,9 @@ export default function App() {
       const loadSecs = (Date.now() - t0) / 1000;
       setStatus('Transcribing...');
       const t1 = Date.now();
-      const { promise } = ctx.transcribe(audio.path, { language: 'en' });
+      const { promise } = ctx.transcribe(audio.path, {
+        language: 'en', tokenTimestamps: true, maxLen: 1,
+      });
       const res = await promise;
       const runSecs = (Date.now() - t1) / 1000;
       await ctx.release();
@@ -107,11 +126,16 @@ export default function App() {
       else if (lastT1 > audioSec * 50) { mult = 10; unit = 'hundredths of a second'; }
 
       setStatus('Finding highlights...');
-      const transcript = segs.map((s: any) => ({
+      const rawSegs = segs.map((s: any) => ({
         startMs: Math.round(s.t0 * mult),
         endMs: Math.round(s.t1 * mult),
-        text: String(s.text).trim(),
+        text: String(s.text),
       }));
+      const wordMode = looksLikeWordLevel(rawSegs);
+      const words: Word[] = wordMode ? tokensToWords(rawSegs) : [];
+      const transcript = wordMode
+        ? wordsToSentences(words)
+        : rawSegs.map((s: any) => ({ ...s, text: s.text.trim() }));
       const clips = suggestHighlights(transcript);
 
       setTr({
@@ -123,6 +147,8 @@ export default function App() {
         unit,
         lastEndMs: Math.round(lastT1 * mult),
         clips,
+        words,
+        wordMode,
       });
     } catch (e) { setError(String(e)); }
     finally { setBusy(false); setStatus(''); }
@@ -132,12 +158,13 @@ export default function App() {
     if (!video || !audio) return;
     if (!ClipExport) { setError('Export module is missing from this build.'); return; }
     const key = `${c.startMs}-${c.endMs}`;
+    const cur = edits[key] ?? { startMs: c.startMs, endMs: c.endMs };
     setError(null); setExporting(key);
     try {
       const t = Date.now();
       // whisper pads the last segment, so never go past the real audio length
-      const endMs = Math.min(c.endMs, audio.durationMs);
-      const r = await ClipExport.exportClip(video.uri, c.startMs, endMs, String(Date.now()));
+      const endMs = Math.min(cur.endMs, audio.durationMs);
+      const r = await ClipExport.exportClip(video.uri, cur.startMs, endMs, String(Date.now()));
       const took = ((Date.now() - t) / 1000).toFixed(1);
       const mb = (r.bytes / 1048576).toFixed(1);
       const where = r.savedToGallery
@@ -148,6 +175,17 @@ export default function App() {
     finally { setExporting(null); }
   }
 
+  function setTrim(c: Clip, startMs: number, endMs: number) {
+    if (!audio) return;
+    const s2 = Math.round(startMs);
+    const e2 = Math.round(endMs);
+    if (s2 < 0 || e2 > audio.durationMs) return;
+    if (e2 - s2 < MIN_CLIP_MS || e2 - s2 > MAX_CLIP_MS) return;
+    const key = `${c.startMs}-${c.endMs}`;
+    setEdits((p) => ({ ...p, [key]: { startMs: s2, endMs: e2 } }));
+    setExported((p) => { const n = { ...p }; delete n[key]; return n; });
+  }
+
   const topPad = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 28) : 44;
 
   return (
@@ -155,7 +193,7 @@ export default function App() {
       <StatusBar barStyle="dark-content" />
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.title}>AI Clip Studio</Text>
-        <Text style={styles.sub}>Prototype v6 (export)</Text>
+        <Text style={styles.sub}>Prototype v7 (words + trim)</Text>
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
             Pick a video, extract audio, then transcribe. The app then runs the
@@ -204,6 +242,11 @@ export default function App() {
             <Text style={styles.meta}>
               {tr.segCount} segments | time unit detected: {tr.unit} | last segment ends at {fmt(tr.lastEndMs)}
             </Text>
+            <Text style={styles.meta}>
+              {tr.wordMode
+                ? `Word timing: ON (${tr.words.length} words)`
+                : 'Word timing: not available (captions and word trim are off)'}
+            </Text>
             <Text style={styles.reason}>{tr.text.slice(0, 300)}...</Text>
           </View>
         )}
@@ -212,25 +255,81 @@ export default function App() {
         {tr ? (
           <>
             <Text style={styles.cardTitle}>Suggested clips from your video</Text>
-            {tr.clips.map((c, i) => (
-              <View key={`${c.startMs}-${c.endMs}`} style={styles.card}>
-                <Text style={styles.cardTitle}>{`${i + 1}. ${c.title}`}</Text>
-                <Text style={styles.meta}>{`${fmt(c.startMs)} to ${fmt(c.endMs)}  |  experimental score ${c.score}`}</Text>
-                <Text style={styles.reason}>{c.reason}</Text>
-                <Pressable
-                  style={[styles.button, (busy || exporting !== null) && styles.disabled]}
-                  disabled={busy || exporting !== null}
-                  onPress={() => exportClip(c)}
-                >
-                  <Text style={styles.buttonText}>
-                    {exporting === `${c.startMs}-${c.endMs}` ? 'Exporting...' : 'Export 9:16 clip'}
+            {tr.clips.map((c, i) => {
+              const key = `${c.startMs}-${c.endMs}`;
+              const cur = edits[key] ?? { startMs: c.startMs, endMs: c.endMs };
+              const inClip = wordsInRange(tr.words, cur.startMs, cur.endMs);
+              const firstText = inClip.slice(0, 6).map((w) => w.text).join(' ');
+              const lastText = inClip.slice(-6).map((w) => w.text).join(' ');
+              const chunks = makeCaptionChunks(tr.words, cur.startMs, cur.endMs);
+              const off = busy || exporting !== null;
+              const W = tr.wordMode;
+              return (
+                <View key={key} style={styles.card}>
+                  <Text style={styles.cardTitle}>{`${i + 1}. ${c.title}`}</Text>
+                  <Text style={styles.meta}>{`Suggested ${fmt(c.startMs)} to ${fmt(c.endMs)}  |  experimental score ${c.score}`}</Text>
+                  <Text style={styles.reason}>{c.reason}</Text>
+
+                  <Text style={styles.cardTitle}>
+                    {`Clip ${fmtT(cur.startMs)} to ${fmtT(cur.endMs)} (${((cur.endMs - cur.startMs) / 1000).toFixed(1)} s)`}
                   </Text>
-                </Pressable>
-                {exported[`${c.startMs}-${c.endMs}`] && (
-                  <Text style={styles.meta}>{exported[`${c.startMs}-${c.endMs}`]}</Text>
-                )}
-              </View>
-            ))}
+                  <Text style={styles.meta}>Start</Text>
+                  <View style={styles.row}>
+                    {W && <Pressable style={[styles.small, off && styles.disabled]} disabled={off}
+                      onPress={() => setTrim(c, stepStart(tr.words, cur.startMs, -1), cur.endMs)}>
+                      <Text style={styles.smallText}>- word</Text></Pressable>}
+                    <Pressable style={[styles.small, off && styles.disabled]} disabled={off}
+                      onPress={() => setTrim(c, cur.startMs - 1000, cur.endMs)}>
+                      <Text style={styles.smallText}>-1 s</Text></Pressable>
+                    <Pressable style={[styles.small, off && styles.disabled]} disabled={off}
+                      onPress={() => setTrim(c, cur.startMs + 1000, cur.endMs)}>
+                      <Text style={styles.smallText}>+1 s</Text></Pressable>
+                    {W && <Pressable style={[styles.small, off && styles.disabled]} disabled={off}
+                      onPress={() => setTrim(c, stepStart(tr.words, cur.startMs, 1), cur.endMs)}>
+                      <Text style={styles.smallText}>+ word</Text></Pressable>}
+                  </View>
+                  <Text style={styles.meta}>End</Text>
+                  <View style={styles.row}>
+                    {W && <Pressable style={[styles.small, off && styles.disabled]} disabled={off}
+                      onPress={() => setTrim(c, cur.startMs, stepEnd(tr.words, cur.endMs, -1))}>
+                      <Text style={styles.smallText}>- word</Text></Pressable>}
+                    <Pressable style={[styles.small, off && styles.disabled]} disabled={off}
+                      onPress={() => setTrim(c, cur.startMs, cur.endMs - 1000)}>
+                      <Text style={styles.smallText}>-1 s</Text></Pressable>
+                    <Pressable style={[styles.small, off && styles.disabled]} disabled={off}
+                      onPress={() => setTrim(c, cur.startMs, cur.endMs + 1000)}>
+                      <Text style={styles.smallText}>+1 s</Text></Pressable>
+                    {W && <Pressable style={[styles.small, off && styles.disabled]} disabled={off}
+                      onPress={() => setTrim(c, cur.startMs, stepEnd(tr.words, cur.endMs, 1))}>
+                      <Text style={styles.smallText}>+ word</Text></Pressable>}
+                  </View>
+                  {W && (
+                    <>
+                      <Text style={styles.meta}>{`Starts: "${firstText}"`}</Text>
+                      <Text style={styles.meta}>{`Ends: "...${lastText}"`}</Text>
+                      <Text style={styles.meta}>
+                        {`Caption preview (${chunks.length} captions, first 4, time from clip start):`}
+                      </Text>
+                      {chunks.slice(0, 4).map((ch, k) => (
+                        <Text key={k} style={styles.meta}>
+                          {`${fmtT(ch.startMs)}  ${ch.words.map((w) => w.text).join(' ').toUpperCase()}`}
+                        </Text>
+                      ))}
+                    </>
+                  )}
+                  <Pressable
+                    style={[styles.button, off && styles.disabled]}
+                    disabled={off}
+                    onPress={() => exportClip(c)}
+                  >
+                    <Text style={styles.buttonText}>
+                      {exporting === key ? 'Exporting...' : 'Export 9:16 clip'}
+                    </Text>
+                  </Pressable>
+                  {exported[key] && <Text style={styles.meta}>{exported[key]}</Text>}
+                </View>
+              );
+            })}
             {tr.clips.length === 0 && (
               <Text style={styles.meta}>The engine found no clips of 15 to 60 seconds in this transcript.</Text>
             )}
@@ -267,4 +366,7 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 16, fontWeight: '600', color: '#111' },
   meta: { fontSize: 12, color: '#555' },
   reason: { fontSize: 13, color: '#222' },
+  row: { flexDirection: 'row', gap: 8 },
+  small: { flex: 1, backgroundColor: '#eee', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
+  smallText: { color: '#111', fontSize: 13, fontWeight: '600' },
 });
