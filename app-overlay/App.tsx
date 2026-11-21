@@ -431,7 +431,7 @@ export default function App() {
                 </View>
               );
             })}
-            {tr.clips.length ==            {tr.clips.length === 0 && (
+                        {tr.clips.length === 0 && ({tr.clips.length === 0 && (
               <Text style={styles.meta}>The engine found no clips of 15 to 60 seconds in this transcript.</Text>
             )}
           </>
