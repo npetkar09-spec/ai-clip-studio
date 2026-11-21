@@ -17,6 +17,10 @@ const AudioExtract: any = (() => {
   try { return requireNativeModule('AudioExtract'); } catch (e) { return null; }
 })();
 
+const ClipExport: any = (() => {
+  try { return requireNativeModule('ClipExport'); } catch (e) { return null; }
+})();
+
 function fmt(ms: number): string {
   const s = Math.round(ms / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -42,6 +46,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [tr, setTr] = useState<Tr | null>(null);
+  const [exporting, setExporting] = useState<string | null>(null);
+  const [exported, setExported] = useState<Record<string, string>>({});
 
   async function pickVideo() {
     setError(null); setAudio(null); setTr(null);
@@ -93,140 +99,3 @@ export default function App() {
 
       // Work out the time unit of the segment times from the audio length.
       const segs = res.segments ?? [];
-      const audioSec = audio.durationMs / 1000;
-      const lastT1 = segs.reduce((m: number, s: any) => Math.max(m, s.t1), 0);
-      let mult = 1000;
-      let unit = 'seconds';
-      if (lastT1 > audioSec * 500) { mult = 1; unit = 'milliseconds'; }
-      else if (lastT1 > audioSec * 50) { mult = 10; unit = 'hundredths of a second'; }
-
-      setStatus('Finding highlights...');
-      const transcript = segs.map((s: any) => ({
-        startMs: Math.round(s.t0 * mult),
-        endMs: Math.round(s.t1 * mult),
-        text: String(s.text).trim(),
-      }));
-      const clips = suggestHighlights(transcript);
-
-      setTr({
-        text: res.result,
-        loadSecs,
-        runSecs,
-        speed: audio.durationMs / 1000 / runSecs,
-        segCount: segs.length,
-        unit,
-        lastEndMs: Math.round(lastT1 * mult),
-        clips,
-      });
-    } catch (e) { setError(String(e)); }
-    finally { setBusy(false); setStatus(''); }
-  }
-
-  const topPad = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 28) : 44;
-
-  return (
-    <View style={[styles.root, { paddingTop: topPad }]}>
-      <StatusBar barStyle="dark-content" />
-      <ScrollView contentContainerStyle={styles.body}>
-        <Text style={styles.title}>AI Clip Studio</Text>
-        <Text style={styles.sub}>Prototype v5 (real clips)</Text>
-        <View style={styles.notice}>
-          <Text style={styles.noticeText}>
-            Pick a video, extract audio, then transcribe. The app then runs the
-            highlight engine on your video's transcript. Scores are experimental
-            heuristics, not predictions of how a clip will perform. Export is not
-            built yet.
-          </Text>
-        </View>
-        <Pressable style={styles.button} onPress={pickVideo}>
-          <Text style={styles.buttonText}>Pick a video</Text>
-        </Pressable>
-        {video && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Selected video</Text>
-            <Text style={styles.meta}>File: {video.name}</Text>
-            <Text style={styles.meta}>
-              Length: {video.durationMs !== null ? fmt(video.durationMs) : 'unknown'}
-            </Text>
-          </View>
-        )}
-        {video && (
-          <Pressable style={[styles.button, busy && styles.disabled]} onPress={extractAudio} disabled={busy}>
-            <Text style={styles.buttonText}>Extract audio (16 kHz mono)</Text>
-          </Pressable>
-        )}
-        {audio && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Audio extracted</Text>
-            <Text style={styles.meta}>Audio length: {fmt(audio.durationMs)} ({audio.durationMs} ms)</Text>
-            {secs !== null && <Text style={styles.meta}>Took {secs.toFixed(1)} s</Text>}
-          </View>
-        )}
-        {audio && (
-          <Pressable style={[styles.button, busy && styles.disabled]} onPress={transcribe} disabled={busy}>
-            <Text style={styles.buttonText}>Transcribe and find clips</Text>
-          </Pressable>
-        )}
-        {busy && <ActivityIndicator />}
-        {busy && status !== '' && <Text style={styles.meta}>{status}</Text>}
-        {tr && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Transcript</Text>
-            <Text style={styles.meta}>
-              Load {tr.loadSecs.toFixed(1)} s | transcribe {tr.runSecs.toFixed(1)} s | {tr.speed.toFixed(1)}x real time
-            </Text>
-            <Text style={styles.meta}>
-              {tr.segCount} segments | time unit detected: {tr.unit} | last segment ends at {fmt(tr.lastEndMs)}
-            </Text>
-            <Text style={styles.reason}>{tr.text.slice(0, 300)}...</Text>
-          </View>
-        )}
-        {error && <Text style={styles.error}>Error: {error}</Text>}
-
-        {tr ? (
-          <>
-            <Text style={styles.cardTitle}>Suggested clips from your video</Text>
-            {tr.clips.map((c, i) => (
-              <View key={`${c.startMs}-${c.endMs}`} style={styles.card}>
-                <Text style={styles.cardTitle}>{`${i + 1}. ${c.title}`}</Text>
-                <Text style={styles.meta}>{`${fmt(c.startMs)} to ${fmt(c.endMs)}  |  experimental score ${c.score}`}</Text>
-                <Text style={styles.reason}>{c.reason}</Text>
-              </View>
-            ))}
-            {tr.clips.length === 0 && (
-              <Text style={styles.meta}>The engine found no clips of 15 to 60 seconds in this transcript.</Text>
-            )}
-          </>
-        ) : (
-          <>
-            <Text style={styles.cardTitle}>Sample highlights (built-in SAMPLE, not your video)</Text>
-            {sampleClips.map((c, i) => (
-              <View key={`${c.startMs}-${c.endMs}`} style={styles.card}>
-                <Text style={styles.cardTitle}>{`${i + 1}. ${c.title}`}</Text>
-                <Text style={styles.meta}>{`${fmt(c.startMs)} to ${fmt(c.endMs)}  |  experimental score ${c.score}`}</Text>
-                <Text style={styles.reason}>{c.reason}</Text>
-              </View>
-            ))}
-          </>
-        )}
-      </ScrollView>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#ffffff' },
-  body: { padding: 20, paddingBottom: 80, gap: 12 },
-  title: { fontSize: 26, fontWeight: '700', color: '#111' },
-  sub: { fontSize: 14, color: '#555' },
-  notice: { backgroundColor: '#fff4d6', borderRadius: 8, padding: 12 },
-  noticeText: { color: '#5a4300', fontSize: 13 },
-  button: { backgroundColor: '#111', borderRadius: 10, padding: 14, alignItems: 'center' },
-  disabled: { opacity: 0.5 },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  error: { color: '#b00020', fontSize: 13 },
-  card: { borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 12, gap: 4 },
-  cardTitle: { fontSize: 16, fontWeight: '600', color: '#111' },
-  meta: { fontSize: 12, color: '#555' },
-  reason: { fontSize: 13, color: '#222' },
-});
