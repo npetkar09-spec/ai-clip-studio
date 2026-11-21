@@ -64,6 +64,7 @@ export default function App() {
   const [tr, setTr] = useState<Tr | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
   const [exported, setExported] = useState<Record<string, string>>({});
+  const [captionsOn, setCaptionsOn] = useState(true);
   const [edits, setEdits] = useState<Record<string, { startMs: number; endMs: number }>>({});
 
   async function pickVideo() {
@@ -118,7 +119,7 @@ export default function App() {
 
       // Work out the time unit of the segment times from the audio length.
       const segs = res.segments ?? [];
-            const audioSec = audio.durationMs / 1000;
+      const audioSec = audio.durationMs / 1000;
       const lastT1 = segs.reduce((m: number, s: any) => Math.max(m, s.t1), 0);
       let mult = 1000;
       let unit = 'seconds';
@@ -164,13 +165,26 @@ export default function App() {
       const t = Date.now();
       // whisper pads the last segment, so never go past the real audio length
       const endMs = Math.min(cur.endMs, audio.durationMs);
-      const r = await ClipExport.exportClip(video.uri, cur.startMs, endMs, String(Date.now()));
+      let captionsJson = '';
+      if (captionsOn && tr && tr.wordMode) {
+        const chunks = makeCaptionChunks(tr.words, cur.startMs, endMs);
+        captionsJson = JSON.stringify(chunks.map((ch) => ({
+          s: Math.round(ch.startMs), e: Math.round(ch.endMs),
+          w: ch.words.map((w) => ({ t: w.text, s: Math.round(w.startMs), e: Math.round(w.endMs) })),
+        })));
+      }
+      const r = await ClipExport.exportClip(video.uri, cur.startMs, endMs, String(Date.now()), captionsJson);
       const took = ((Date.now() - t) / 1000).toFixed(1);
       const mb = (r.bytes / 1048576).toFixed(1);
       const where = r.savedToGallery
         ? 'Saved to Movies/AI Clip Studio (open it in Gallery)'
         : 'Saved in app cache only (Android 9 or older)';
-      setExported((p) => ({ ...p, [key]: `${where} | ${mb} MB | ${took} s` }));
+      const cap = captionsJson === ''
+        ? 'captions off'
+        : r.captionError
+          ? `caption error: ${r.captionError}`
+          : `captions ${r.captionStates} states`;
+      setExported((p) => ({ ...p, [key]: `${where} | ${mb} MB | ${took} s | ${cap}` }));
     } catch (e) { setError(String(e)); }
     finally { setExporting(null); }
   }
@@ -193,7 +207,7 @@ export default function App() {
       <StatusBar barStyle="dark-content" />
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.title}>AI Clip Studio</Text>
-        <Text style={styles.sub}>Prototype v7 (words + trim)</Text>
+        <Text style={styles.sub}>Prototype v8 (burned-in captions)</Text>
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
             Pick a video, extract audio, then transcribe. The app then runs the
@@ -247,6 +261,11 @@ export default function App() {
                 ? `Word timing: ON (${tr.words.length} words)`
                 : 'Word timing: not available (captions and word trim are off)'}
             </Text>
+            {tr.wordMode && (
+              <Pressable style={styles.button} onPress={() => setCaptionsOn((v) => !v)}>
+                <Text style={styles.buttonText}>{captionsOn ? 'Captions: ON' : 'Captions: OFF'}</Text>
+              </Pressable>
+            )}
             <Text style={styles.reason}>{tr.text.slice(0, 300)}...</Text>
           </View>
         )}
