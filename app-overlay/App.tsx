@@ -1,11 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator, Platform, Pressable, ScrollView, StatusBar,
-  StyleSheet, Text, View,
+  StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { requireNativeModule } from 'expo';
 import * as ImagePicker from 'expo-image-picker';
-import { File, Paths } from 'expo-file-system';
+import { File, FileMode, Paths } from 'expo-file-system';
 import { initWhisper } from 'whisper.rn';
 import { suggestHighlights } from './src/highlights';
 import {
@@ -13,6 +13,7 @@ import {
   tokensToWords, wordsInRange, wordsToSentences,
 } from './src/highlights/words';
 import type { Word } from './src/highlights/words';
+import { classifyLink, notAVideoMessage, sniffVideo } from './src/highlights/link';
 import { makeSampleTranscript } from './src/sample/sampleTranscript';
 
 const MODEL_URL =
@@ -65,14 +66,73 @@ export default function App() {
   const [exporting, setExporting] = useState<string | null>(null);
   const [exported, setExported] = useState<Record<string, string>>({});
   const [captionsOn, setCaptionsOn] = useState(true);
+  const [linkText, setLinkText] = useState('');
+  const [linkMsg, setLinkMsg] = useState<string | null>(null);
+  const [importedUri, setImportedUri] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, { startMs: number; endMs: number }>>({});
 
+  // Remove a video that was downloaded from a link earlier (never touches picked videos).
+  function removeImported() {
+    if (!importedUri) return;
+    try {
+      const f = new File(importedUri);
+      if (f.exists) f.delete();
+    } catch (e) { /* ignore */ }
+    setImportedUri(null);
+  }
+
+  async function importFromLink() {
+    setError(null); setLinkMsg(null);
+    const c = classifyLink(linkText);
+    if (!c.downloadUrl) { setLinkMsg(c.message ?? 'This link cannot be imported.'); return; }
+    removeImported();
+    setAudio(null); setTr(null); setEdits({}); setExported({}); setVideo(null);
+    setBusy(true);
+    setStatus(`Downloading from ${c.source}...`);
+    const dest = new File(Paths.cache, `import-${Date.now()}.mp4`);
+    try {
+      await File.downloadFileAsync(c.downloadUrl, dest, {
+        onProgress: (p: { bytesWritten: number; totalBytes: number }) => {
+          const mb = (p.bytesWritten / 1048576).toFixed(1);
+          setStatus(p.totalBytes > 0
+            ? `Downloading from ${c.source}: ${mb} of ${(p.totalBytes / 1048576).toFixed(1)} MB`
+            : `Downloading from ${c.source}: ${mb} MB`);
+        },
+      });
+      // Check the first bytes: a web page or a non-video file is not accepted.
+      let kind: 'mp4' | 'webm' | 'html' | 'unknown' | 'skipped' = 'skipped';
+      try {
+        const h = dest.open(FileMode.ReadOnly);
+        const head = await h.readBytes(16);
+        h.close();
+        kind = sniffVideo(head);
+      } catch (e) { kind = 'skipped'; }
+      if (kind === 'html' || kind === 'unknown') {
+        try { dest.delete(); } catch (e) { /* ignore */ }
+        setLinkMsg(notAVideoMessage(c.kind));
+        return;
+      }
+      const seg = decodeURIComponent((c.downloadUrl.split('?')[0].split('/').pop() ?? '')).trim();
+      const name = seg !== '' && seg !== 'uc' ? seg : `video from ${c.source}`;
+      setImportedUri(dest.uri);
+      setVideo({ name, durationMs: null, uri: dest.uri });
+      setLinkMsg(`Imported (${((dest.size ?? 0) / 1048576).toFixed(1)} MB). Next: Extract audio.`);
+    } catch (e) {
+      try { if (dest.exists) dest.delete(); } catch (e2) { /* ignore */ }
+      setLinkMsg(
+        `Could not download this link (${String(e)}). Check the link and your internet, ` +
+        'or download the file yourself and tap "Pick a video".'
+      );
+    } finally { setBusy(false); setStatus(''); }
+  }
+
   async function pickVideo() {
-    setError(null); setAudio(null); setTr(null); setEdits({}); setExported({});
+    setError(null); setLinkMsg(null); setAudio(null); setTr(null); setEdits({}); setExported({});
     try {
       const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'] });
       if (!r.canceled && r.assets && r.assets.length > 0) {
         const a = r.assets[0];
+        removeImported();
         setVideo({ name: a.fileName ?? 'video', durationMs: a.duration ?? null, uri: a.uri });
       }
     } catch (e) { setError(String(e)); }
@@ -207,7 +267,7 @@ export default function App() {
       <StatusBar barStyle="dark-content" />
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.title}>AI Clip Studio</Text>
-        <Text style={styles.sub}>Prototype v8 (burned-in captions)</Text>
+        <Text style={styles.sub}>Prototype v9 (link import)</Text>
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
             Pick a video, extract audio, then transcribe. The app then runs the
@@ -219,6 +279,28 @@ export default function App() {
         <Pressable style={styles.button} onPress={pickVideo}>
           <Text style={styles.buttonText}>Pick a video</Text>
         </Pressable>
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Or import from a link</Text>
+          <Text style={styles.meta}>
+            Works with Google Drive (shared as "Anyone with the link"), Dropbox, and direct
+            video file links (https). YouTube and social apps are not downloaded: use your own
+            file with "Pick a video".
+          </Text>
+          <TextInput
+            style={styles.input}
+            value={linkText}
+            onChangeText={setLinkText}
+            placeholder="Paste a video link (https://...)"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            editable={!busy}
+          />
+          <Pressable style={[styles.button, busy && styles.disabled]} onPress={importFromLink} disabled={busy}>
+            <Text style={styles.buttonText}>Import from link</Text>
+          </Pressable>
+          {linkMsg && <Text style={styles.reason}>{linkMsg}</Text>}
+        </View>
         {video && (
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Selected video</Text>
@@ -349,43 +431,4 @@ export default function App() {
                 </View>
               );
             })}
-            {tr.clips.length === 0 && (
-              <Text style={styles.meta}>The engine found no clips of 15 to 60 seconds in this transcript.</Text>
-            )}
-          </>
-        ) : (
-          <>
-            <Text style={styles.cardTitle}>Sample highlights (built-in SAMPLE, not your video)</Text>
-            {sampleClips.map((c, i) => (
-              <View key={`${c.startMs}-${c.endMs}`} style={styles.card}>
-                <Text style={styles.cardTitle}>{`${i + 1}. ${c.title}`}</Text>
-                <Text style={styles.meta}>{`${fmt(c.startMs)} to ${fmt(c.endMs)}  |  experimental score ${c.score}`}</Text>
-                <Text style={styles.reason}>{c.reason}</Text>
-              </View>
-            ))}
-          </>
-        )}
-      </ScrollView>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#ffffff' },
-  body: { padding: 20, paddingBottom: 80, gap: 12 },
-  title: { fontSize: 26, fontWeight: '700', color: '#111' },
-  sub: { fontSize: 14, color: '#555' },
-  notice: { backgroundColor: '#fff4d6', borderRadius: 8, padding: 12 },
-  noticeText: { color: '#5a4300', fontSize: 13 },
-  button: { backgroundColor: '#111', borderRadius: 10, padding: 14, alignItems: 'center' },
-  disabled: { opacity: 0.5 },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  error: { color: '#b00020', fontSize: 13 },
-  card: { borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 12, gap: 4 },
-  cardTitle: { fontSize: 16, fontWeight: '600', color: '#111' },
-  meta: { fontSize: 12, color: '#555' },
-  reason: { fontSize: 13, color: '#222' },
-  row: { flexDirection: 'row', gap: 8 },
-  small: { flex: 1, backgroundColor: '#eee', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
-  smallText: { color: '#111', fontSize: 13, fontWeight: '600' },
-});
+            {tr.clips.length ==
