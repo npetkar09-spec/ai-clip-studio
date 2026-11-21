@@ -431,4 +431,44 @@ export default function App() {
                 </View>
               );
             })}
-            {tr.clips.length ==
+            {tr.clips.length ==            {tr.clips.length === 0 && (
+              <Text style={styles.meta}>The engine found no clips of 15 to 60 seconds in this transcript.</Text>
+            )}
+          </>
+        ) : (
+          <>
+            <Text style={styles.cardTitle}>Sample highlights (built-in SAMPLE, not your video)</Text>
+            {sampleClips.map((c, i) => (
+              <View key={`${c.startMs}-${c.endMs}`} style={styles.card}>
+                <Text style={styles.cardTitle}>{`${i + 1}. ${c.title}`}</Text>
+                <Text style={styles.meta}>{`${fmt(c.startMs)} to ${fmt(c.endMs)}  |  experimental score ${c.score}`}</Text>
+                <Text style={styles.reason}>{c.reason}</Text>
+              </View>
+            ))}
+          </>
+        )}
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#ffffff' },
+  body: { padding: 20, paddingBottom: 80, gap: 12 },
+  title: { fontSize: 26, fontWeight: '700', color: '#111' },
+  sub: { fontSize: 14, color: '#555' },
+  notice: { backgroundColor: '#fff4d6', borderRadius: 8, padding: 12 },
+  noticeText: { color: '#5a4300', fontSize: 13 },
+  button: { backgroundColor: '#111', borderRadius: 10, padding: 14, alignItems: 'center' },
+  disabled: { opacity: 0.5 },
+  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  error: { color: '#b00020', fontSize: 13 },
+  card: { borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 12, gap: 4 },
+  cardTitle: { fontSize: 16, fontWeight: '600', color: '#111' },
+  meta: { fontSize: 12, color: '#555' },
+  reason: { fontSize: 13, color: '#222' },
+  row: { flexDirection: 'row', gap: 8 },
+  input: { borderWidth: 1, borderColor: '#bbb', borderRadius: 8, padding: 10, fontSize: 14, color: '#111' },
+  small: { flex: 1, backgroundColor: '#eee', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
+  smallText: { color: '#111', fontSize: 13, fontWeight: '600' },
+});
