@@ -14,6 +14,9 @@ import {
 } from './src/highlights/words';
 import type { Word } from './src/highlights/words';
 import { classifyLink, notAVideoMessage, sniffVideo } from './src/highlights/link';
+import { parseYouTubeLink } from './src/highlights/youtube';
+import YouTubeCard from './YouTubeCard';
+import type { PickedFile } from './YouTubeCard';
 import { makeSampleTranscript } from './src/sample/sampleTranscript';
 
 const MODEL_URL =
@@ -69,6 +72,7 @@ export default function App() {
   const [linkText, setLinkText] = useState('');
   const [linkMsg, setLinkMsg] = useState<string | null>(null);
   const [importedUri, setImportedUri] = useState<string | null>(null);
+  const [ytPrefill, setYtPrefill] = useState<{ text: string; n: number } | null>(null);
   const [edits, setEdits] = useState<Record<string, { startMs: number; endMs: number }>>({});
 
   // Remove a video that was downloaded from a link earlier (never touches picked videos).
@@ -81,9 +85,22 @@ export default function App() {
     setImportedUri(null);
   }
 
+  // A video chosen in the YouTube steps (copied into the app cache by the file picker).
+  function acceptVideo(f: PickedFile) {
+    setError(null); setLinkMsg(null); setAudio(null); setTr(null); setEdits({}); setExported({});
+    if (importedUri && importedUri !== f.uri) removeImported();
+    setImportedUri(f.copied ? f.uri : null);
+    setVideo({ name: f.name, durationMs: f.durationMs, uri: f.uri });
+  }
+
   async function importFromLink() {
     setError(null); setLinkMsg(null);
     const c = classifyLink(linkText);
+    if (c.kind === 'youtube' || parseYouTubeLink(linkText).ok) {
+      setYtPrefill({ text: linkText, n: Date.now() });
+      setLinkMsg('That is a YouTube link, so it was moved to the "Clip a YouTube video" box above. Follow the steps there.');
+      return;
+    }
     if (!c.downloadUrl) { setLinkMsg(c.message ?? 'This link cannot be imported.'); return; }
     removeImported();
     setAudio(null); setTr(null); setEdits({}); setExported({}); setVideo(null);
@@ -126,7 +143,7 @@ export default function App() {
     } finally { setBusy(false); setStatus(''); }
   }
 
-  async function pickVideo() {
+  async function pickVideo(): Promise<boolean> {
     setError(null); setLinkMsg(null); setAudio(null); setTr(null); setEdits({}); setExported({});
     try {
       const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'] });
@@ -134,8 +151,10 @@ export default function App() {
         const a = r.assets[0];
         removeImported();
         setVideo({ name: a.fileName ?? 'video', durationMs: a.duration ?? null, uri: a.uri });
+        return true;
       }
     } catch (e) { setError(String(e)); }
+    return false;
   }
 
   async function extractAudio() {
@@ -267,7 +286,7 @@ export default function App() {
       <StatusBar barStyle="dark-content" />
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.title}>AI Clip Studio</Text>
-        <Text style={styles.sub}>Prototype v9 (link import)</Text>
+        <Text style={styles.sub}>Prototype v10 (YouTube link)</Text>
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
             Pick a video, extract audio, then transcribe. The app then runs the
@@ -276,6 +295,7 @@ export default function App() {
             the clip and crops the centre of the picture to 9:16.
           </Text>
         </View>
+        <YouTubeCard busy={busy} onFile={acceptVideo} onPickGallery={pickVideo} prefill={ytPrefill} />
         <Pressable style={styles.button} onPress={pickVideo}>
           <Text style={styles.buttonText}>Pick a video</Text>
         </Pressable>
@@ -283,8 +303,8 @@ export default function App() {
           <Text style={styles.cardTitle}>Or import from a link</Text>
           <Text style={styles.meta}>
             Works with Google Drive (shared as "Anyone with the link"), Dropbox, and direct
-            video file links (https). YouTube and social apps are not downloaded: use your own
-            file with "Pick a video".
+            video file links (https). For YouTube links use the "Clip a YouTube video" box
+            above. Social apps are not downloaded: use your own file with "Pick a video".
           </Text>
           <TextInput
             style={styles.input}

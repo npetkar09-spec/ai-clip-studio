@@ -10,6 +10,7 @@ mkdir -p build-app/src
 mv build-app/src-highlights-tmp build-app/src/highlights
 cp -r app-overlay/src/sample build-app/src/sample
 cp app-overlay/App.tsx build-app/App.tsx
+cp app-overlay/YouTubeCard.tsx build-app/YouTubeCard.tsx
 cd build-app
 # Name and Android package id (edit the id if you publish later).
 node -e '
@@ -20,6 +21,8 @@ fs.writeFileSync(p,JSON.stringify(j,null,2));'
 npm install
 npx expo install expo-image-picker
 npx expo install expo-file-system
+npx expo install expo-document-picker
+npx expo install expo-clipboard
 npm install whisper.rn
 npm install buffer
 bash "$GITHUB_WORKSPACE/scripts/add-audio-module.sh"
